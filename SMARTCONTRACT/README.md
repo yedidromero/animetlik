@@ -126,10 +126,53 @@ Estos son los **minimal ABIs** para que cualquier cliente (como **viem/wagmi**) 
 
 ### Stories – Lecturas (View)
 
-```json
+Stories – Escrituras (Write/Payable)
+JSON
+
 [
-  { "type":"function","stateMutability":"view","name":"plans","inputs":[{"name":"planId","type":"uint256"}],
-    "outputs":[{"name":"name","type":"string"},{"name":"priceWei","type":"uint256"},{"name":"periodSecs","type":"uint32"},{"name":"active","type":"bool"}]
-  },
-  { "type":"function","stateMutability":"view","name":"likePriceWei","inputs":[],"outputs":[{"type":"uint256"}] }
+  { "type":"function","stateMutability":"payable","name":"subscribe","inputs":[{"name":"planId","type":"uint256"},{"name":"periods","type":"uint256"}],"outputs":[] },
+  { "type":"function","stateMutability":"payable","name":"like","inputs":[{"name":"pubId","type":"uint256"}],"outputs":[] }
 ]
+
+Stories – Escrituras (Write/Payable)
+JSON
+
+[
+  { "type":"function","stateMutability":"payable","name":"subscribe","inputs":[{"name":"planId","type":"uint256"},{"name":"periods","type":"uint256"}],"outputs":[] },
+  { "type":"function","stateMutability":"payable","name":"like","inputs":[{"name":"pubId","type":"uint256"}],"outputs":[] }
+]
+Vault – Admin/Operación
+JSON
+
+[
+  { "type":"function","stateMutability":"nonpayable","name":"setAuthorizedFunder","inputs":[{"name":"stories","type":"address"}],"outputs":[] },
+  { "type":"function","stateMutability":"payable","name":"fund","inputs":[],"outputs":[] }
+]
+Seguridad y Diseño
+Pull-over-push: Los pagos se reparten en el momento del like, evitando la acumulación de saldos internos riesgosos.
+
+URIs Off-Chain (IPFS/HTTP): Minimiza el coste de gas y el tamaño del estado on-chain.
+
+BPS Configurables: Las comisiones (setFeeTargets) son configurables solo por el owner, siendo flexibles y auditable en cadena.
+
+Vault Separado: El contrato principal (Stories) no custodia el fondo educativo, sino que solo lo alimenta a través de la función fund() en el Vault separado.
+
+Contacto
+Red: Monad Testnet (chainId=10143)
+Contrato Principal (Stories): 0x6c1aE56758aa8031f0E3Db6107Be79BEa07E9f3F
+Vault de Staking: 0x3fFeD014511b586E9E949f0826C665B609Ba658c
+
+Para ver el flujo completo desde la app móvil (Reown): conectar wallet → suscribir → like → abrir hash en explorer. Los enlaces de ejemplo están disponibles en la tabla de Transacciones de Referencia.
+
+
+---
+
+**Instrucciones para arreglarlo en GitHub:**
+
+1.  Abre tu archivo `README.md` en GitHub para editarlo.
+2.  Busca la sección que comienza con `## ABIs Mínimos (Para Cliente)`.
+3.  **Elimina** esa sección y todo el texto hasta el final.
+4.  **Pega** el código Markdown completo que acabo de proporcionar (desde `## ABIs Mínimos...` hasta el final).
+5.  Guarda los cambios.
+
+¡Con esa corrección, los bloques de código JSON deberían aparecer perfectamente resaltados y formatead
