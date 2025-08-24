@@ -1,4 +1,5 @@
 // app/(tabs)/profile.tsx
+
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   SafeAreaView,
@@ -13,11 +14,45 @@ import {
   Modal,
   Pressable,
   ScrollView,
+  Alert,
+  ActivityIndicator,
+  Linking,
 } from 'react-native';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { AppKitButton } from '@reown/appkit-wagmi-react-native';
-import { useAccount, useDisconnect, useWalletClient, useBalance } from 'wagmi';
+import { useAccount, useDisconnect, useWalletClient, useBalance, usePublicClient } from 'wagmi';
+
+/* ========= CONSTES ON-CHAIN (TU DESPLIEGUE) ========= */
+const MONAD_CHAIN_ID = 10143;
+const MONAD_EXPLORER_TX = 'https://testnet.monadexplorer.com/tx/';
+const STORIES_ADDR = '0x6c1ae56758aa8031f0e3db6107be79bea07e9f3f' as `0x${string}`;
+
+// ABI mínimo para leer el plan y ejecutar subscribe
+const STORIES_ABI = [
+  {
+    type: 'function',
+    stateMutability: 'view',
+    name: 'plans',
+    inputs: [{ name: 'planId', type: 'uint256' }],
+    outputs: [
+      { name: 'name', type: 'string' },
+      { name: 'priceWei', type: 'uint256' },
+      { name: 'periodSecs', type: 'uint32' },
+      { name: 'active', type: 'bool' },
+    ],
+  },
+  {
+    type: 'function',
+    stateMutability: 'payable',
+    name: 'subscribe',
+    inputs: [
+      { name: 'planId', type: 'uint256' },
+      { name: 'periods', type: 'uint256' },
+    ],
+    outputs: [],
+  },
+] as const;
 
 type Plan = 'Free' | 'Premium' | 'VIP';
 const USERNAME_KEY = 'profile:username';
@@ -64,12 +99,14 @@ function PlanOption({
   bullets = [],
   selected,
   onSelect,
+  rightAdornment,
 }: {
   title: Plan;
   icon: React.ReactNode;
   bullets?: string[];
   selected?: boolean;
-  onSelect: (p: Plan) => void;
+  onSelect: (p: Plan) => void | Promise<void>;
+  rightAdornment?: React.ReactNode;
 }) {
   return (
     <Pressable onPress={() => onSelect(title)} style={[styles.planRow, selected && { opacity: 0.95 }]}>
@@ -87,13 +124,15 @@ function PlanOption({
           <Text key={i} style={styles.bullet}>{'\u2022'} {b}</Text>
         ))}
       </View>
+      {rightAdornment}
     </Pressable>
   );
 }
 
 export default function ProfileScreen() {
-  const { isConnected, address } = useAccount();
-  const { data: walletClient } = useWalletClient();
+  const { isConnected, address, chainId } = useAccount();
+  const { data: walletClient } = useWalletClient(); // viem WalletClient (firma)
+  const publicClient = usePublicClient();           // viem PublicClient (lecturas/esperar receipts)
   const { disconnect } = useDisconnect();
 
   const isReadyConnected = useMemo(
@@ -132,7 +171,7 @@ export default function ProfileScreen() {
   /* ===== Balance MON con wagmi useBalance ===== */
   const { data: balData, isLoading: balLoading, isError: balError } = useBalance({
     address,
-    chainId: 10143,     // Monad Testnet (ajusta o elimina para usar la chain actual)
+    chainId: MONAD_CHAIN_ID,
     watch: true,
     enabled: !!address,
     scopeKey: 'mon-balance',
@@ -146,8 +185,7 @@ export default function ProfileScreen() {
     ? `${Number(balData.formatted).toFixed(4)} MON`
     : '— MON';
 
-  const shortAddr = (addr?: string) =>
-    addr ? `${addr.slice(0, 10)}…` : '';
+  const shortAddr = (addr?: string) => (addr ? `${addr.slice(0, 10)}…` : '');
 
   /* ===== Plan (estado + modal) ===== */
   const [plan, setPlan] = useState<Plan>('VIP');
@@ -161,11 +199,102 @@ export default function ProfileScreen() {
     }
   };
 
-  const selectPlan = async (p: Plan) => {
+  const selectPlanLocal = async (p: Plan) => {
     setPlan(p);
     await AsyncStorage.setItem(PLAN_KEY, p);
     setPlansVisible(false);
   };
+
+  /* ====== Precio on-chain del plan Premium ====== */
+  const [priceWei, setPriceWei] = useState<bigint | null>(null);
+  const [loadingPremium, setLoadingPremium] = useState(false);
+  const [lastTx, setLastTx] = useState<string | null>(null);
+
+  // lee on-chain el planId=1
+  useEffect(() => {
+    (async () => {
+      if (!publicClient) return;
+      try {
+        const result: any = await publicClient.readContract({
+          address: STORIES_ADDR,
+          abi: STORIES_ABI,
+          functionName: 'plans',
+          args: [1n],
+        });
+        // result es [name, priceWei, periodSecs, active]
+        const _priceWei = result?.[1] as bigint | undefined;
+        setPriceWei(_priceWei ?? null);
+      } catch (e) {
+        console.warn('No pude leer priceWei del plan Premium:', e);
+      }
+    })();
+  }, [publicClient]);
+
+  // formateador seguro para MON (sin convertir a Number)
+  function fmtMON(wei: bigint, decimals = 4) {
+    const base = 10n ** 18n;
+    const int = wei / base;
+    const frac = wei % base;
+    const fracStr = (frac + base).toString().slice(1).slice(0, decimals).padEnd(decimals, '0');
+    return `${int.toString()}.${fracStr} MON`;
+  }
+
+  // handler que ejecuta la transacción subscribe(1,1)
+  async function onSelectPremium() {
+    if (!walletClient || !publicClient || !address) {
+      Alert.alert('Conecta tu wallet');
+      return;
+    }
+    if (chainId !== MONAD_CHAIN_ID) {
+      Alert.alert('Red incorrecta', 'Cambia a Monad Testnet');
+      return;
+    }
+    if (!priceWei) {
+      Alert.alert('Sin precio', 'No pude leer el precio on-chain del plan');
+      return;
+    }
+
+    try {
+      setLoadingPremium(true);
+
+      // 1) simulate para armar la request
+      const { request } = await publicClient.simulateContract({
+        account: address as `0x${string}`,
+        address: STORIES_ADDR,
+        abi: STORIES_ABI,
+        functionName: 'subscribe',
+        args: [1n, 1n],         // planId=1, periods=1
+        value: priceWei,        // MON a pagar
+        chain: undefined,       // usa la chain configurada en wagmi
+      });
+
+      // 2) firmar/enviar con la wallet (Reown)
+      const hash = await walletClient.writeContract(request);
+
+      // 3) esperar confirmación
+      await publicClient.waitForTransactionReceipt({ hash });
+      setLastTx(hash);
+
+      // 4) persistir plan local
+      await AsyncStorage.setItem(PLAN_KEY, 'Premium');
+      setPlan('Premium');
+      setPlansVisible(false);
+
+      Alert.alert('Suscripción exitosa', `Pagaste ${fmtMON(priceWei)}\nTx: ${hash.slice(0, 10)}…`);
+    } catch (e: any) {
+      console.error(e);
+      Alert.alert('Error', e?.shortMessage ?? e?.message ?? 'Falló la transacción');
+    } finally {
+      setLoadingPremium(false);
+    }
+  }
+
+  const premiumBullets = [
+    'New releases screen',
+    'More recommendations',
+    'Some +16 content',
+    priceWei ? `On-chain price: ${fmtMON(priceWei)}/30d` : 'Fetching on-chain price…',
+  ];
 
   return (
     <SafeAreaView style={styles.safe}>
@@ -262,7 +391,6 @@ export default function ProfileScreen() {
                       { backgroundColor: planChipColors(plan).bg },
                     ]}
                   >
-                    {/* corona para VIP y también se muestra para los demás planes por consistencia */}
                     <MaterialCommunityIcons name="crown" size={16} color={planChipColors(plan).fg} />
                     <Text style={[styles.chipPlanText, { color: planChipColors(plan).fg }]}>{plan}</Text>
                   </TouchableOpacity>
@@ -288,7 +416,7 @@ export default function ProfileScreen() {
           )}
         </View>
 
-        {/* ====== MODAL PLANS (MISMO ARCHIVO) ====== */}
+        {/* ====== MODAL PLANS ====== */}
         <Modal
           visible={plansVisible}
           transparent
@@ -319,7 +447,7 @@ export default function ProfileScreen() {
                   <PlanOption
                     title="Free"
                     selected={plan === 'Free'}
-                    onSelect={selectPlan}
+                    onSelect={selectPlanLocal}
                     icon={<MaterialCommunityIcons name="star-four-points" size={44} color="#000" />}
                     bullets={[
                       'Limited access',
@@ -327,21 +455,21 @@ export default function ProfileScreen() {
                       'Ads',
                     ]}
                   />
+
+                  {/* PREMIUM: dispara tx on-chain */}
                   <PlanOption
                     title="Premium"
                     selected={plan === 'Premium'}
-                    onSelect={selectPlan}
+                    onSelect={async () => { await onSelectPremium(); }}
                     icon={<MaterialCommunityIcons name="diamond-stone" size={44} color="#000" />}
-                    bullets={[
-                      'New releases screen',
-                      'More recommendations',
-                      'Some +16 content',
-                    ]}
+                    bullets={premiumBullets}
+                    rightAdornment={loadingPremium ? <ActivityIndicator /> : null}
                   />
+
                   <PlanOption
                     title="VIP"
                     selected={plan === 'VIP'}
-                    onSelect={selectPlan}
+                    onSelect={selectPlanLocal}
                     icon={<MaterialCommunityIcons name="crown" size={44} color="#000" />}
                     bullets={[
                       'New releases with advance notice of date/time',
@@ -350,6 +478,18 @@ export default function ProfileScreen() {
                     ]}
                   />
                 </ScrollView>
+
+                {/* Link al explorer si hay última tx */}
+                {lastTx && (
+                  <TouchableOpacity
+                    onPress={() => Linking.openURL(MONAD_EXPLORER_TX + lastTx)}
+                    style={{ alignSelf: 'center', marginBottom: 14 }}
+                  >
+                    <Text style={{ color: '#2e82ff', textDecorationLine: 'underline', fontWeight: '800' }}>
+                      Ver suscripción en el explorer
+                    </Text>
+                  </TouchableOpacity>
+                )}
               </ImageBackground>
             </Pressable>
           </Pressable>

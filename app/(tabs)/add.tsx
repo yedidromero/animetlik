@@ -1,5 +1,5 @@
-// app/(tabs)/add.tsx
-import React, { useMemo, useState } from 'react';
+// app/(tabs)/read.tsx
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   SafeAreaView,
   View,
@@ -9,18 +9,37 @@ import {
   TouchableOpacity,
   Image,
   Platform,
-  TextInput,
-  KeyboardAvoidingView,
   ScrollView,
   Pressable,
   Alert,
+  ActivityIndicator,
+  Linking,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-//import * as ImagePicker from 'expo-image-picker';
 import { AppKitButton } from '@reown/appkit-wagmi-react-native';
-import { useAccount, useDisconnect, useWalletClient } from 'wagmi';
+import { useAccount, useDisconnect, useWalletClient, usePublicClient } from 'wagmi';
 
-/* ===== Header con tu logo (y acciones a la derecha si estás conectado) ===== */
+/** ======= CONST ON-CHAIN (TU DESPLIEGUE) ======= */
+const MONAD_CHAIN_ID = 10143;
+const MONAD_EXPLORER_TX = 'https://testnet.monadexplorer.com/tx/';
+const MONAD_EXPLORER_ADDR = 'https://testnet.monadexplorer.com/address/';
+const STORIES_ADDR = '0x6c1ae56758aa8031f0e3db6107be79bea07e9f3f' as `0x${string}`;
+
+const PUB_ID = 0n; // <- tu publicación ya creada
+const AUTHOR = '0x369DB4c69319E1ca009FdfeA6d172A88210dbf05' as `0x${string}`;
+
+const STORIES_ABI = [
+  { type: 'function', stateMutability: 'view', name: 'likePriceWei', inputs: [], outputs: [{ type: 'uint256' }] },
+  { type: 'function', stateMutability: 'payable', name: 'like', inputs: [{ name: 'pubId', type: 'uint256' }], outputs: [] },
+] as const;
+
+/** ======= CONTENIDO DEMO DE LECTURA ======= */
+const COVER = 'https://malpasolibreria.com/portada.jpeg';
+const TITLE = 'warrior';
+const BODY = `Descubre la apasionante historia de Kasui, un adolescente de 14 años con una rara condición llamada "Lienzo de Maná". Incapaz de desarrollar habilidades o avanzar en niveles como los demás, Kasui se enfrenta a una brecha que lo separa de su generación y de su prodigioso hermano adoptivo, Dann. A pesar de esto, Kasui se niega a rendirse y se sumerge en un intenso entrenamiento para fortalecer su cuerpo.
+En secreto, estudia magia, culturas y razas en busca de una solución para superar su mala fortuna. Acompaña a Kasui en su emocionante viaje mientras desafía las expectativas y descubre su destino en un mundo lleno de maravillas y desafíos. ¿Podrá superar su condición y encontrar su lugar en un mundo donde todos tienen ventajas únicas? Prepárate para una historia llena de acción, aventuras y autodescubrimiento.`;
+
+/* ===== Header simple con logo ===== */
 function AppHeader({ right }: { right?: React.ReactNode }) {
   return (
     <View style={styles.header}>
@@ -30,14 +49,11 @@ function AppHeader({ right }: { right?: React.ReactNode }) {
   );
 }
 
-export default function AddScreen() {
-  const [coverUri, setCoverUri] = useState<string | null>(null);
-  const [title, setTitle] = useState('');
-  const [body, setBody] = useState('');
-
-  // ===== Estado de wallet (igual patrón que profile.tsx) =====
-  const { isConnected, address } = useAccount();
-  const { data: walletClient } = useWalletClient();
+export default function ReadScreen() {
+  // Estado de wallet
+  const { isConnected, address, chainId } = useAccount();
+  const { data: walletClient } = useWalletClient();  // firma (Reown/AppKit)
+  const publicClient = usePublicClient();            // lecturas / esperar receipts
   const { disconnect } = useDisconnect();
 
   const isReadyConnected = useMemo(
@@ -45,45 +61,79 @@ export default function AddScreen() {
     [isConnected, address, walletClient]
   );
 
-  // ===== Selección de portada =====
-  const pickCover = async () => {
-    if (Platform.OS !== 'web') {
-      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-      if (status !== 'granted') {
-        Alert.alert('Permiso requerido', 'Necesitamos acceso a tu galería para adjuntar la portada.');
-        return;
+  // Precio del like on-chain
+  const [likeWei, setLikeWei] = useState<bigint | null>(null);
+  const [loadingLike, setLoadingLike] = useState(false);
+  const [lastTx, setLastTx] = useState<string | null>(null);
+
+  useEffect(() => {
+    (async () => {
+      if (!publicClient) return;
+      try {
+        const wei = (await publicClient.readContract({
+          address: STORIES_ADDR,
+          abi: STORIES_ABI,
+          functionName: 'likePriceWei',
+        })) as bigint;
+        setLikeWei(wei);
+      } catch (e) {
+        console.warn('No pude leer likePriceWei:', e);
       }
-    }
+    })();
+  }, [publicClient]);
 
-    const res = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      allowsEditing: true,
-      aspect: [3, 2],
-      quality: 0.9,
-    });
+  function fmtMON(wei: bigint, decimals = 4) {
+    const base = 10n ** 18n;
+    const int = wei / base;
+    const frac = wei % base;
+    const fracStr = (frac + base).toString().slice(1).slice(0, decimals).padEnd(decimals, '0');
+    return `${int.toString()}.${fracStr} MON`;
+  }
 
-    if (!res.canceled && res.assets?.[0]?.uri) {
-      setCoverUri(res.assets[0].uri);
-    }
-  };
-
-  const clearCover = () => setCoverUri(null);
-
-  const submit = () => {
-    if (!title.trim() || !body.trim()) {
-      Alert.alert('Falta información', 'Completa el título y la historia.');
+  async function handleLike() {
+    if (!walletClient || !publicClient || !address) {
+      Alert.alert('Conecta tu wallet');
       return;
     }
-    // TODO: lógica real de envío
-    console.log('SUBMIT', { coverUri, title, body });
-    Alert.alert('¡Guardado!', 'Tu historia se guardó (demo).');
-    setCoverUri(null);
-    setTitle('');
-    setBody('');
-  };
+    if (chainId !== MONAD_CHAIN_ID) {
+      Alert.alert('Red incorrecta', 'Cambia a Monad Testnet');
+      return;
+    }
+    if (!likeWei) {
+      Alert.alert('Sin precio', 'No pude leer el precio del like on-chain');
+      return;
+    }
 
-  const shortAddr = (addr?: string) =>
-    addr ? `${addr.slice(0, 6)}…${addr.slice(-4)}` : '';
+    try {
+      setLoadingLike(true);
+
+      // 1) simulate para crear la request
+      const { request } = await publicClient.simulateContract({
+        account: address as `0x${string}`,
+        address: STORIES_ADDR,
+        abi: STORIES_ABI,
+        functionName: 'like',
+        args: [PUB_ID],
+        value: likeWei,
+      });
+
+      // 2) firmar/enviar
+      const hash = await walletClient.writeContract(request);
+
+      // 3) esperar confirmación
+      await publicClient.waitForTransactionReceipt({ hash });
+      setLastTx(hash);
+
+      Alert.alert('¡Like enviado!', `Pagaste ${fmtMON(likeWei)}\nTx: ${hash.slice(0, 10)}…`);
+    } catch (e: any) {
+      console.error(e);
+      Alert.alert('Error', e?.shortMessage ?? e?.message ?? 'Falló la transacción');
+    } finally {
+      setLoadingLike(false);
+    }
+  }
+
+  const shortAddr = (addr?: string) => (addr ? `${addr.slice(0, 6)}…${addr.slice(-4)}` : '');
 
   return (
     <SafeAreaView style={styles.safe}>
@@ -93,7 +143,6 @@ export default function AddScreen() {
         style={styles.bg}
         imageStyle={styles.bgImage}
       >
-        {/* Header con logo; a la derecha address y disconnect si hay conexión */}
         <AppHeader
           right={
             isReadyConnected ? (
@@ -107,85 +156,73 @@ export default function AddScreen() {
           }
         />
 
-        <KeyboardAvoidingView
-          style={{ flex: 1 }}
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        >
-          {/* Contenido: si NO hay wallet conectada, mostramos Connect Wallet */}
-          {!isReadyConnected ? (
-            <ScrollView
-              contentContainerStyle={[styles.container, { alignItems: 'center' }]}
-              keyboardShouldPersistTaps="handled"
+        {/* Si no hay conexión, botón de conectar */}
+        {!isReadyConnected ? (
+          <View style={[styles.cardLogin]}>
+            <Text style={styles.loginTitle}>Log in / Sign up</Text>
+            <AppKitButton label="Connect Wallet" />
+            <Text style={styles.note}>Connect your wallet to like this story.</Text>
+          </View>
+        ) : (
+          <ScrollView contentContainerStyle={styles.container} showsVerticalScrollIndicator={false}>
+            {/* Cover */}
+            <View style={styles.coverWrap}>
+              <Image source={{ uri: COVER }} style={styles.coverImage} resizeMode="cover" />
+            </View>
+
+            {/* Título */}
+            <Text style={styles.title}>{TITLE}</Text>
+
+            {/* Autor */}
+            <Pressable
+              onPress={() => Linking.openURL(MONAD_EXPLORER_ADDR + AUTHOR)}
+              style={styles.authorPill}
             >
-              <View style={[styles.cardLogin]}>
-                <Text style={styles.loginTitle}>Log in / Sign up</Text>
-                <AppKitButton label="Connect Wallet" />
-                <Text style={styles.note}>Connect your wallet to create a new story.</Text>
-              </View>
-            </ScrollView>
-          ) : (
-            <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
-              {/* ====== Tarjeta/Sección EDIT visible ====== */}
-              <View style={styles.editorCard}>
-                <Text style={styles.editTitle}>EDIT</Text>
+              <Ionicons name="person" size={14} color="#fff" />
+              <Text style={styles.authorText}>{shortAddr(AUTHOR)}</Text>
+              <Ionicons name="open-outline" size={14} color="#fff" />
+            </Pressable>
 
-                {/* Caja de portada */}
-                <Pressable onPress={pickCover} style={styles.coverBox}>
-                  {coverUri ? (
-                    <>
-                      <Image source={{ uri: coverUri }} style={styles.coverImage} resizeMode="cover" />
-                      <TouchableOpacity onPress={clearCover} style={styles.clearBtn}>
-                        <Ionicons name="close" size={16} color="#000" />
-                      </TouchableOpacity>
-                    </>
-                  ) : (
-                    <Text style={styles.coverPlaceholder}>Adjuntar portada del capítulo.</Text>
-                  )}
-                </Pressable>
+            {/* Texto de la historia */}
+            <Text style={styles.body}>{BODY}</Text>
 
-                {/* Título centrado y visible */}
-                <TextInput
-                  value={title}
-                  onChangeText={setTitle}
-                  placeholder="Title"
-                  placeholderTextColor="#b9b9b9"
-                  style={styles.storyTitle}
-                  maxLength={70}
-                  autoCorrect={false}
-                  autoCapitalize="sentences"
-                />
-
-                {/* Cuerpo */}
-                <TextInput
-                  value={body}
-                  onChangeText={setBody}
-                  placeholder="Write your story here"
-                  placeholderTextColor="#cfcfcf"
-                  style={styles.storyBody}
-                  multiline
-                  textAlignVertical="top"
-                  autoCorrect
-                />
-              </View>
-
-              {/* separador para no tapar con FAB */}
-              <View style={{ height: 110 }} />
-            </ScrollView>
-          )}
-
-          {/* Botón flotante naranja con check (solo útil si conectado) */}
-          {isReadyConnected && (
-            <TouchableOpacity onPress={submit} activeOpacity={0.9} style={styles.fab}>
-              <Ionicons name="checkmark" size={32} color="#000" />
+            {/* Botón Like */}
+            <TouchableOpacity
+              onPress={handleLike}
+              disabled={loadingLike || !likeWei}
+              activeOpacity={0.9}
+              style={[styles.likeBtn, (loadingLike || !likeWei) && { opacity: 0.7 }]}
+            >
+              {loadingLike ? (
+                <ActivityIndicator color="#000" />
+              ) : (
+                <Text style={styles.likeLabel}>
+                  {likeWei ? `Like — ${fmtMON(likeWei)}` : 'Leyendo precio…'}
+                </Text>
+              )}
             </TouchableOpacity>
-          )}
-        </KeyboardAvoidingView>
+
+            {/* Link al explorer si ya hay tx */}
+            {lastTx && (
+              <TouchableOpacity
+                onPress={() => Linking.openURL(MONAD_EXPLORER_TX + lastTx)}
+                style={{ alignSelf: 'center', marginTop: 12 }}
+              >
+                <Text style={{ color: '#2e82ff', textDecorationLine: 'underline', fontWeight: '800' }}>
+                  Ver like en el explorer
+                </Text>
+              </TouchableOpacity>
+            )}
+
+            <View style={{ height: 40 }} />
+          </ScrollView>
+        )}
       </ImageBackground>
     </SafeAreaView>
   );
 }
 
-/* ===== Estilos ===== */
+/* ===== Estilos (coherentes con tu app) ===== */
 const ORANGE = '#ff8a2b';
 const CARD = '#ff7f3a';
 
@@ -194,7 +231,6 @@ const styles = StyleSheet.create({
   bg: { flex: 1 },
   bgImage: { opacity: 0.12 },
 
-  /* Header */
   header: {
     backgroundColor: ORANGE,
     paddingHorizontal: 14,
@@ -205,21 +241,17 @@ const styles = StyleSheet.create({
   },
   logo: { height: 90, maxWidth: '100%', resizeMode: 'contain', alignSelf: 'center' },
   headerRight: {
-    position: 'absolute',
-    right: 12,
-    top: Platform.select({ ios: 6, android: 8 }),
-    alignItems: 'flex-end',
+    position: 'absolute', right: 12, top: Platform.select({ ios: 6, android: 8 }), alignItems: 'flex-end'
   },
   addressTiny: { color: '#3b1f0e', fontSize: 12, marginBottom: 6, fontWeight: '700' },
   logoutBtn: { backgroundColor: '#2a1a0a', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 12 },
   logoutLabel: { color: '#ffd36b', fontWeight: '800', fontSize: 12 },
 
-  /* Contenido */
   container: { paddingHorizontal: 18, paddingTop: 14 },
 
-  /* Tarjeta de acceso cuando NO hay conexión */
   cardLogin: {
     marginTop: 24,
+    alignSelf: 'center',
     width: '92%',
     backgroundColor: CARD,
     borderRadius: 18,
@@ -242,98 +274,39 @@ const styles = StyleSheet.create({
   },
   note: { color: '#3b1f0e', marginTop: 8, fontWeight: '600', textAlign: 'center' },
 
-  /* ===== Sección/ Tarjeta EDIT (más visible) ===== */
-  editorCard: {
-    backgroundColor: 'rgba(0,0,0,0.45)', // capa para separarse del fondo
-    borderWidth: 2,
-    borderColor: '#0f0f0f',
-    borderRadius: 12,
-    padding: 14,
-    shadowColor: '#000',
-    shadowOpacity: 0.35,
-    shadowRadius: 10,
-    shadowOffset: { width: 0, height: 6 },
-    elevation: 6,
+  coverWrap: {
+    borderWidth: 2, borderColor: '#1a1a1a', borderRadius: 10, overflow: 'hidden',
+    backgroundColor: '#ffffff10', height: 200, marginBottom: 12,
   },
-
-  editTitle: {
-    fontSize: 40,
-    fontWeight: '900',
-    color: '#f2f2f2',
-    textShadowColor: 'rgba(255,200,60,0.55)',
-    textShadowOffset: { width: 0, height: 3 },
-    textShadowRadius: 8,
-    marginBottom: 10,
-  },
-
-  coverBox: {
-    borderWidth: 2,
-    borderColor: '#1a1a1a',
-    borderRadius: 8,
-    height: 140,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#ffffff14',
-    overflow: 'hidden',
-  },
-  coverPlaceholder: { color: '#d0d0d0', fontSize: 12, textAlign: 'center', paddingHorizontal: 10 },
   coverImage: { width: '100%', height: '100%' },
-  clearBtn: {
-    position: 'absolute',
-    right: 8,
-    top: 8,
-    width: 26,
-    height: 26,
-    borderRadius: 13,
+
+  title: {
+    fontSize: 36, fontWeight: '900', color: '#fdfdfd',
+    textShadowColor: 'rgba(255,200,60,0.55)', textShadowOffset: { width: 0, height: 3 },
+    textShadowRadius: 8, textTransform: 'capitalize',
+  },
+
+  authorPill: {
+    alignSelf: 'flex-start', marginTop: 8,
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    backgroundColor: '#111', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 10
+  },
+  authorText: { color: '#fff', fontWeight: '800', letterSpacing: 0.3 },
+
+  body: {
+    marginTop: 12, color: '#f5f5f5', fontSize: 16, lineHeight: 22,
+    backgroundColor: '#00000055', borderRadius: 8, padding: 12, borderWidth: 2, borderColor: '#1a1a1a'
+  },
+
+  likeBtn: {
+    marginTop: 16,
+    alignSelf: 'center',
     backgroundColor: ORANGE,
-    alignItems: 'center',
-    justifyContent: 'center',
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderRadius: 12,
     borderWidth: 2,
     borderColor: '#000',
   },
-
-  storyTitle: {
-    marginTop: 14,
-    fontSize: 28,
-    textAlign: 'center',     // centrado
-    color: '#f2f2f2',        // texto claro
-    borderWidth: 2,
-    borderColor: '#1a1a1a',
-    borderRadius: 8,
-    paddingVertical: 8,
-    paddingHorizontal: 10,
-    backgroundColor: 'rgba(255,255,255,0.06)', // contraste leve
-  },
-
-  storyBody: {
-    marginTop: 12,
-    borderWidth: 2,
-    borderColor: '#1a1a1a',
-    borderRadius: 8,
-    minHeight: 220,
-    padding: 12,
-    fontSize: 15,
-    color: '#f5f5f5',
-    backgroundColor: '#00000055',
-  },
-
-  /* Botón flotante para guardar */
-  fab: {
-    position: 'absolute',
-    right: 18,
-    bottom: 18,
-    width: 58,
-    height: 58,
-    borderRadius: 29,
-    backgroundColor: ORANGE,
-    alignItems: 'center',
-    justifyContent: 'center',
-    elevation: 8,
-    shadowColor: '#000',
-    shadowOpacity: 0.35,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 6 },
-    borderWidth: 2,
-    borderColor: '#000',
-  },
+  likeLabel: { fontWeight: '900', color: '#000', fontSize: 16 },
 });
