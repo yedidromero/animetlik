@@ -45,12 +45,14 @@ Clona e instala dependencias:
 
 ## bash
 npm install --legacy-peer-deps
+
 Lanza el proyecto:
 
 ## bash
 
 npx expo start
-En la consola verás:
+
+## En la consola verás:
 
 › Using Expo Go
 › Press a │ open Android
