@@ -165,14 +165,3 @@ Vault de Staking: 0x3fFeD014511b586E9E949f0826C665B609Ba658c
 Para ver el flujo completo desde la app móvil (Reown): conectar wallet → suscribir → like → abrir hash en explorer. Los enlaces de ejemplo están disponibles en la tabla de Transacciones de Referencia.
 
 
----
-
-**Instrucciones para arreglarlo en GitHub:**
-
-1.  Abre tu archivo `README.md` en GitHub para editarlo.
-2.  Busca la sección que comienza con `## ABIs Mínimos (Para Cliente)`.
-3.  **Elimina** esa sección y todo el texto hasta el final.
-4.  **Pega** el código Markdown completo que acabo de proporcionar (desde `## ABIs Mínimos...` hasta el final).
-5.  Guarda los cambios.
-
-¡Con esa corrección, los bloques de código JSON deberían aparecer perfectamente resaltados y formatead
